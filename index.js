@@ -1,23 +1,19 @@
 const express = require('express');
+require('dotenv').config();
 const sqlite3 = require('sqlite3').verbose();
 const bodyParser = require('body-parser');
-const { GPT4All } = require('gpt4all');
+const { OpenAI } = require('openai');
 
 const app = express();
 app.use(bodyParser.json());
 
 const db = new sqlite3.Database('./saleAgent.db');
 
-// Initialize GPT4All
-const gpt4all = new GPT4All();
-gpt4all
-  .init()
-  .then(() => {
-    console.log('GPT4All model loaded successfully');
-  })
-  .catch((err) => {
-    console.error('Failed to load GPT4All model:', err);
-  });
+// Initialize OpenAI
+const openai = new OpenAI({
+  apiKey: process.env.OPEN_API_KEY,
+  baseURL: 'https://integrate.api.nvidia.com/v1',
+});
 
 // Endpoint to collect user information
 app.post('/collect', (req, res) => {
@@ -60,16 +56,34 @@ app.post('/query', async (req, res) => {
         return res.status(500).json({ status: 'error', message: err.message });
       }
 
-      // Format conversation history for GPT4All
-      const conversationHistory = rows
-        .map((row) => `${row.role}: ${row.message}`)
-        .join('\n');
+      // Format conversation history for OpenAI
+      const conversationHistory = rows.map((row) => ({
+        role: row.role,
+        content: row.message,
+      }));
+
+      // Add system-level instructions
+      const systemInstruction =
+        'You are a dumb AI smart phone sales agent. Provide simple and straightforward responses. It might ask some question on smart phone like iphone samsung.';
+      conversationHistory.push({ role: 'system', content: systemInstruction });
 
       // Add the new user message to the history
-      const fullPrompt = `${conversationHistory}\nuser: ${message}`;
+      conversationHistory.push({ role: 'user', content: message });
 
-      // Generate a response using GPT4All
-      const response = await gpt4all.prompt(fullPrompt);
+      // Add the new user message to the history
+      conversationHistory.push({ role: 'user', content: message });
+
+      // Generate a response using OpenAI
+      const response = await openai.chat.completions.create({
+        model: 'nvidia/llama-3.1-nemotron-70b-instruct', // Use GPT-3.5 or GPT-4
+        messages: conversationHistory,
+        temperature: 0.5,
+        top_p: 1,
+        max_tokens: 1024,
+      });
+
+      console.log(response);
+      const assistantResponse = response.choices[0].message.content;
 
       // Save the user message and assistant response to the database
       const insertUserMessage = `INSERT INTO conversations (user_id, role, message) VALUES (?, ?, ?)`;
@@ -77,11 +91,15 @@ app.post('/query', async (req, res) => {
 
       db.serialize(() => {
         db.run(insertUserMessage, [userId, 'user', message]);
-        db.run(insertAssistantMessage, [userId, 'assistant', response]);
+        db.run(insertAssistantMessage, [
+          userId,
+          'assistant',
+          assistantResponse,
+        ]);
       });
 
       // Return the assistant's response
-      res.json({ status: 'success', response });
+      res.json({ status: 'success', response: assistantResponse });
     });
   } catch (err) {
     res.status(500).json({ status: 'error', message: err.message });
@@ -115,7 +133,6 @@ app.post('/followup', (req, res) => {
     res.json({ status: 'success', message: 'Follow-up sent' });
   });
 });
-
 // Endpoint to save additional user information
 app.post('/save', (req, res) => {
   const { userId, product } = req.body;
@@ -132,6 +149,33 @@ app.post('/save', (req, res) => {
       return res.status(500).json({ status: 'error', message: err.message });
     }
     res.json({ status: 'success', message: 'Data saved' });
+  });
+});
+
+// Endpoint to retrieve conversation history
+app.get('/conversation/:userId', (req, res) => {
+  const userId = req.params.userId;
+
+  if (!userId) {
+    return res
+      .status(400)
+      .json({ status: 'error', message: 'User ID is required' });
+  }
+
+  const query = `SELECT role, message, timestamp FROM conversations WHERE user_id = ? ORDER BY timestamp ASC`;
+  db.all(query, [userId], (err, rows) => {
+    if (err) {
+      return res.status(500).json({ status: 'error', message: err.message });
+    }
+
+    // Format the conversation history
+    const conversationHistory = rows.map((row) => ({
+      role: row.role,
+      message: row.message,
+      timestamp: row.timestamp,
+    }));
+
+    res.json({ status: 'success', conversation: conversationHistory });
   });
 });
 
