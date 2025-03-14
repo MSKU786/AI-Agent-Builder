@@ -133,7 +133,9 @@ app.post('/followup', (req, res) => {
     res.json({ status: 'success', message: 'Follow-up sent' });
   });
 });
+
 // Endpoint to save additional user information
+
 app.post('/save', (req, res) => {
   const { userId, product } = req.body;
 
